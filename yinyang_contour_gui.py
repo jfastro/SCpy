@@ -212,6 +212,19 @@ def yin_to_geo(data, th, ph):
     return cart2sph(*g)
 
 
+EQUATOR_STYLE = dict(color="#2ca02c", ls="-.", lw=1.6)
+EQUATOR_LABEL = "rotated-grid equator"
+
+
+def rotated_equator_geo(data, n=1441):
+    """Equator of the rotated grid (Yin frame, rotated latitude 0) as geographic (lon, lat) in degrees.
+    For GEM data this is the great circle at latitude 0 of the grid defined by
+    Grd_xlat1/xlon1/xlat2/xlon2; without a rotation it is the Yin panel's own equator."""
+    ph = np.linspace(-np.pi, np.pi, n)
+    gt, gp = yin_to_geo(data, np.full_like(ph, np.pi / 2), ph)
+    return gp / DEG, 90 - gt / DEG
+
+
 def panel_edges_geo(data):
     """Nominal Yin and Yang panel edges as geographic (lon, lat) in degrees."""
     th, ph = nominal_boundary()
@@ -1081,7 +1094,7 @@ class GemDataset:
 # Plotting (pure Matplotlib, usable without the GUI)
 # ---------------------------------------------------------------------------
 DEFAULT_OPTS = dict(nlevels=20, cmap="RdBu_r", filled=True, lines=True, clabels=False,
-                    symmetric=False, vmin=None, vmax=None, boundaries=True,
+                    symmetric=False, vmin=None, vmax=None, boundaries=True, rot_equator=False,
                     nlat=181, nlon=361, title="", lon0=0.0, lat0=30.0, antipode=True,
                     lmax=None, spec_norm="degree", logl=False, spectra=None)
 
@@ -1144,13 +1157,20 @@ def plot_native(fig, data, o):
             th2, ph2 = swap_panel(th, ph)
             lx, ly = break_wraps(ph2 / DEG, 90 - th2 / DEG, jump=180)
             ax.plot(lx, ly, color="m", ls="--", lw=1.2, label="other panel's edge")
+        if o["rot_equator"]:
+            ph_e = np.linspace(-np.pi, np.pi, 1441)
+            th_e = np.full_like(ph_e, np.pi / 2)
+            if name.startswith("Yang"):
+                th_e, ph_e = swap_panel(th_e, ph_e)       # Yin's equator seen in Yang coordinates
+            lx, ly = break_wraps(ph_e / DEG, 90 - th_e / DEG, jump=180)
+            ax.plot(lx, ly, label=EQUATOR_LABEL, zorder=4, **EQUATOR_STYLE)
         ax.set_title(name)
         ax.set_ylabel("panel latitude 90°−θ [deg]")
         ax.set_aspect("equal")
         ax.set_xlim(X[0], X[-1])
         ax.set_ylim(Y.min(), Y.max())
     axs[-1].set_xlabel("panel longitude φ [deg]" + ("  (GEM rotated longitude − 180°)" if data.rot is not None else ""))
-    if o["boundaries"]:
+    if o["boundaries"] or o["rot_equator"]:
         axs[0].legend(loc="lower left", fontsize=7, framealpha=0.8)
     fig.colorbar(cs, ax=list(axs), orientation="vertical", fraction=0.04,
                  pad=0.02, label=data.name)
@@ -1222,6 +1242,10 @@ def plot_global(fig, data, o, projection="equirect"):
         ax.plot(*proj(lx, ly), color="0.15", lw=1.2, label="Yin nominal edge", zorder=4)
         lx, ly = break_wraps(glon, glat, jump=180)
         ax.plot(*proj(lx, ly), color="m", ls="--", lw=1.2, label="Yang nominal edge", zorder=4)
+    if o["rot_equator"]:
+        lx, ly = break_wraps(*rotated_equator_geo(data), jump=180)
+        ax.plot(*proj(lx, ly), label=EQUATOR_LABEL, zorder=4, **EQUATOR_STYLE)
+    if o["boundaries"] or o["rot_equator"]:
         if moll:   # below the map, clear of the ellipse
             ax.legend(loc="upper left", bbox_to_anchor=(0.0, 0.0), ncol=2, fontsize=7, framealpha=0.8)
         else:
@@ -1306,6 +1330,9 @@ def plot_sphere(fig, data, o):
         (ylon, ylat), (glon, glat) = panel_edges_geo(data)
         curves = [(ylon, ylat, dict(color="0.15", lw=1.2), "Yin nominal edge"),
                   (glon, glat, dict(color="m", ls="--", lw=1.2), "Yang nominal edge")]
+    if o["rot_equator"]:
+        elon, elat = rotated_equator_geo(data)
+        curves.append((elon, elat, EQUATOR_STYLE, EQUATOR_LABEL))
 
     cs = None
     for k, (ax, (l0, p0)) in enumerate(zip(axs, centres)):
@@ -1462,6 +1489,7 @@ class YinYangApp:
         self.v_clabels = tk.BooleanVar(value=False)
         self.v_sym = tk.BooleanVar(value=False)
         self.v_bounds = tk.BooleanVar(value=True)
+        self.v_rot_eq = tk.BooleanVar(value=False)
         self.v_transpose = tk.BooleanVar(value=False)
         self.v_layout = V(value=LAYOUTS["auto"])
         self.v_show = V(value=SHOW_MODES["A"])
@@ -1608,17 +1636,18 @@ class YinYangApp:
                                           ("Contour lines", self.v_lines),
                                           ("Line labels", self.v_clabels),
                                           ("Symmetric about 0", self.v_sym),
-                                          ("Show panel boundaries", self.v_bounds)), start=5):
+                                          ("Show panel boundaries", self.v_bounds),
+                                          ("Show rotated-grid equator", self.v_rot_eq)), start=5):
             ttk.Checkbutton(f, text=txt, variable=var, command=self.redraw).grid(
                 row=row, column=0, columnspan=3, sticky="w")
-        ttk.Label(f, text="Global grid nlat×nlon").grid(row=10, column=0, sticky="w")
+        ttk.Label(f, text="Global grid nlat×nlon").grid(row=11, column=0, sticky="w")
         for col, v in ((1, self.v_nlat), (2, self.v_nlon)):
             e = ttk.Entry(f, textvariable=v, width=6)
-            e.grid(row=10, column=col, padx=2)
+            e.grid(row=11, column=col, padx=2)
             e.bind("<Return>", lambda ev: self.redraw())
-        ttk.Label(f, text="Title").grid(row=11, column=0, sticky="w")
+        ttk.Label(f, text="Title").grid(row=12, column=0, sticky="w")
         e = ttk.Entry(f, textvariable=self.v_title, width=20)
-        e.grid(row=11, column=1, columnspan=2, sticky="ew")
+        e.grid(row=12, column=1, columnspan=2, sticky="ew")
         e.bind("<Return>", lambda ev: self.redraw())
 
         f = ttk.LabelFrame(ctrl, text="Sphere view (Basemap orthographic)", padding=4)
@@ -1693,7 +1722,7 @@ class YinYangApp:
                     clabels=self.v_clabels.get(), symmetric=self.v_sym.get(),
                     vmin=self._float_or_none(self.v_vmin.get()),
                     vmax=self._float_or_none(self.v_vmax.get()),
-                    boundaries=self.v_bounds.get(), nlat=int(self.v_nlat.get()),
+                    boundaries=self.v_bounds.get(), rot_equator=self.v_rot_eq.get(), nlat=int(self.v_nlat.get()),
                     nlon=int(self.v_nlon.get()), title=self.v_title.get(),
                     lon0=float(self.v_lon0.get() or 0), lat0=float(self.v_lat0.get() or 0),
                     antipode=self.v_antipode.get(),
